@@ -83,7 +83,40 @@ label{display:block;font-size:0.78rem;color:var(--muted);margin-bottom:6px;font-
 .toast.success{border-color:var(--sub);color:var(--sub)}
 .toast.error{border-color:var(--danger);color:var(--danger)}
 .empty{text-align:center;padding:48px;color:var(--muted);font-size:0.9rem}
-@media(max-width:768px){.stats-grid{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}aside{display:none}.form-grid{grid-template-columns:1fr}}
+
+/* HAMBURGER (hidden on desktop) */
+.hamburger-btn{display:none;background:var(--surface);border:1px solid var(--border);color:var(--text);font-size:1.1rem;border-radius:6px;padding:6px 10px;cursor:pointer}
+.sidebar-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:150}
+
+/* TABLE SCROLL WRAPPER (always allow horizontal scroll on small screens) */
+.table-wrap{overflow-x:auto}
+table{min-width:600px}
+
+@media(max-width:768px){
+  .stats-grid{grid-template-columns:1fr 1fr}
+  .layout{grid-template-columns:1fr;position:relative}
+  .hamburger-btn{display:block}
+  aside{
+    position:fixed;top:56px;left:0;bottom:0;width:240px;z-index:200;
+    transform:translateX(-100%);transition:transform 0.25s ease;
+    overflow-y:auto;
+  }
+  aside.open{transform:translateX(0)}
+  .sidebar-backdrop.open{display:block}
+  .form-grid{grid-template-columns:1fr}
+  main{padding:16px}
+  nav{padding:0 14px;gap:10px}
+  .logo{font-size:1.2rem}
+  #adminUser{display:none}
+  .page-header{flex-wrap:wrap;gap:10px}
+  .page-title{font-size:1.2rem}
+  .stat-val{font-size:1.4rem}
+  .form-card{padding:16px;max-width:100%}
+}
+@media(max-width:420px){
+  .stats-grid{grid-template-columns:1fr}
+  .admin-badge{display:none}
+}
 </style>
 </head>
 <body>
@@ -108,19 +141,21 @@ label{display:block;font-size:0.78rem;color:var(--muted);margin-bottom:6px;font-
     <div class="nav-right">
       <span id="adminUser"></span>
       <button class="btn btn-ghost" onclick="adminLogout()">Logout</button>
+      <button class="hamburger-btn" id="hamburgerBtn" onclick="toggleSidebar()">☰</button>
     </div>
   </nav>
 
   <div class="layout">
-    <aside>
+    <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="toggleSidebar()"></div>
+    <aside id="sidebar">
       <div class="side-section">Dashboard</div>
-      <div class="side-link active" onclick="showPage('dashboard',this)">📊 Overview</div>
+      <div class="side-link active" onclick="showPage('dashboard',this);closeSidebarMobile()">📊 Overview</div>
       <div class="side-section">Content</div>
-      <div class="side-link" onclick="showPage('anime',this)">🎌 Anime List</div>
-      <div class="side-link" onclick="showPage('add',this)">➕ Add Anime</div>
-      <div class="side-link" onclick="showPage('import',this)">📥 Import from MAL</div>
+      <div class="side-link" onclick="showPage('anime',this);closeSidebarMobile()">🎌 Anime List</div>
+      <div class="side-link" onclick="showPage('add',this);closeSidebarMobile()">➕ Add Anime</div>
+      <div class="side-link" onclick="showPage('import',this);closeSidebarMobile()">📥 Import from MAL</div>
       <div class="side-section">Users</div>
-      <div class="side-link" onclick="showPage('users',this)">👥 All Users</div>
+      <div class="side-link" onclick="showPage('users',this);closeSidebarMobile()">👥 All Users</div>
       <div class="side-section">Site</div>
       <div class="side-link" onclick="window.open('index.html','_blank')">🌐 View Site</div>
     </aside>
@@ -481,6 +516,7 @@ let lastSearchTime = 0;
 
 window.searchJikan = async function() {
   const q = document.getElementById('importSearch').value.trim();
+  console.log('[AniStream] searchJikan called with:', q);
   if (!q) { showToast('Type a title to search', 'error'); return; }
 
   // Throttle: Jikan allows ~3 req/sec, 60/min — wait if searched too recently
@@ -496,12 +532,27 @@ window.searchJikan = async function() {
   document.getElementById('importLoading').style.display = 'block';
   document.getElementById('importLoading').textContent = '🔄 Searching MyAnimeList...';
 
-  await fetchJikanWithRetry(q, 0);
+  try {
+    await fetchJikanWithRetry(q, 0);
+  } catch (e) {
+    console.error('[AniStream] searchJikan top-level error:', e);
+    document.getElementById('importLoading').style.display = 'none';
+    showToast('Unexpected error — see console for details', 'error');
+  }
 }
 
 async function fetchJikanWithRetry(q, attempt) {
+  console.log('[AniStream] fetchJikanWithRetry attempt', attempt, 'for', q);
   try {
-    const res = await fetch(`${JIKAN}/anime?q=${encodeURIComponent(q)}&limit=12&sfw=true`);
+    // Safety timeout — if the network hangs, fail visibly after 10s instead of forever
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const res = await fetch(`${JIKAN}/anime?q=${encodeURIComponent(q)}&limit=12&sfw=true`, {
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    console.log('[AniStream] Jikan response status:', res.status);
 
     if (res.status === 429) {
       if (attempt < 2) {
@@ -520,6 +571,7 @@ async function fetchJikanWithRetry(q, attempt) {
     }
 
     const json = await res.json();
+    console.log('[AniStream] Jikan results count:', json.data?.length);
     lastImportResults = json.data || [];
     document.getElementById('importLoading').style.display = 'none';
     if (!lastImportResults.length) {
@@ -539,8 +591,13 @@ async function fetchJikanWithRetry(q, attempt) {
         <td><button class="btn btn-primary" style="padding:5px 10px;font-size:0.75rem" onclick="importAnime(${i})">📥 Import</button></td>
       </tr>`).join('');
   } catch (e) {
+    console.error('[AniStream] fetchJikanWithRetry error:', e);
     document.getElementById('importLoading').style.display = 'none';
-    showToast('Network error reaching Jikan — check your connection', 'error');
+    if (e.name === 'AbortError') {
+      showToast('Request timed out — your connection may be too slow/unstable', 'error');
+    } else {
+      showToast('Network error reaching Jikan: ' + e.message, 'error');
+    }
   }
 }
 
@@ -578,6 +635,16 @@ window.showPage = function(name, el) {
   document.querySelectorAll('.side-link').forEach(l => l.classList.remove('active'));
   document.getElementById('page-' + name).classList.add('active');
   if (el) el.classList.add('active');
+}
+
+// ── MOBILE SIDEBAR ──
+window.toggleSidebar = function() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebarBackdrop').classList.toggle('open');
+}
+window.closeSidebarMobile = function() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebarBackdrop').classList.remove('open');
 }
 
 // ── TOAST ──
